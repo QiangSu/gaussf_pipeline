@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61.0"] # Use setuptools as the build backend
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gaussf_pipeline" # Choose a unique name for PyPI
+version = "0.1.0" # Initial version
+authors = [
+  # --- TODO: Replace with your actual name and email ---
+  { name="Your Name", email="your.email@example.com" },
+]
+description = "K-mer counting, normalization, and Gaussian fitting for transcript abundance."
+readme = "README.md"
+# --- TODO: Ensure a LICENSE file exists in the root, or change to text = "MIT" ---
+license = { file="LICENSE" }
+requires-python = ">=3.8" # Specify minimum Python version
+classifiers = [ # Standard classifiers for PyPI
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License", # Adjust if you chose a different license
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [ # List runtime dependencies found in your scripts
+    "pandas",
+    "scipy",
+    "tqdm",
+    # argparse, re, os, gzip, concurrent.futures, collections, queue, csv, glob, gc are standard library
+]
+
+[project.urls] # Optional: Links for PyPI page
+# --- TODO: Replace with your actual GitHub username/repo ---
+"Homepage" = "https://github.com/your_username/gaussf_pipeline"
+"Bug Tracker" = "https://github.com/your_username/gaussf_pipeline/issues"
+
+# Define command-line scripts - this makes your scripts runnable after installation
+[project.scripts]
+# --- MODIFIED: Use hyphenated names for commands ---
+gaussf-generate-kmers = "gaussf_pipeline.kmer_freq_dist:main"
+gaussf-count-kmers = "gaussf_pipeline.kmer_counter:main"
+gaussf-merge-normalize = "gaussf_pipeline.merge_normalize:main"
+gaussf-fit-gaussian = "gaussf_pipeline.gaussf_tpm:main"
+
+# --- Tool Configuration ---
+
+# Ruff for linting and formatting
+[project.optional-dependencies]
+dev = [ # Dependencies needed for development/testing
+    "ruff",
+    "pytest",
+    # "mypy", # Optional: for static type checking
+]
+
+[tool.ruff]
+line-length = 88 # Example setting
+select = ["E", "F", "W", "I", "UP"] # Select rule sets (E/W=pycodestyle errors/warnings, F=pyflakes, I=isort, UP=pyupgrade)
+ignore = [] # Specific rules to ignore if needed
+
+[tool.ruff.format]
+quote-style = "double" # Use double quotes
+
+# --- MODIFIED: Uncomment this section for the src layout ---
+# Tell setuptools where to find the package source code within the 'src' directory
+[tool.setuptools.packages.find]
+where = ["src"]
+
