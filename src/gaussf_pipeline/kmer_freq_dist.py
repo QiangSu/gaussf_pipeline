@@ -2,20 +2,19 @@ import argparse
 import csv
 import os
 from collections import defaultdict
-import sys # Import sys for exit calls
-
-# --- Function Definitions ---
 
 def process_fasta_in_memory(input_file):
     """
-    Reads a FASTA file, modifies headers in memory according to 'gene|transcript' format,
-    and returns lists of modified headers and corresponding sequences.
-    Skips entries with malformed headers or missing required information.
+    Reads a FASTA file, extracts gene symbol and transcript ID, formats headers
+    as 'gene_symbol|transcript_id' in memory, and returns lists of modified
+    headers and corresponding sequences.
+    Skips entries missing the 'gene_symbol:' field or the transcript ID.
     """
     modified_headers = []
     sequences = []
     current_sequence = ""
     valid_header_processed = False # Flag to track if the last processed header was valid
+    skipped_no_symbol = 0 # Counter for skipped entries due to missing gene symbol
 
     try:
         with open(input_file, 'r') as infile:
@@ -38,8 +37,8 @@ def process_fasta_in_memory(input_file):
                         transcript_id = None
                         # Loop through parts to find gene_symbol and transcript_id
                         for part in parts:
-                            if part.startswith('gene:'):
-                                # Handle potential extra colons in gene symbol if needed, though usually not expected
+                            if part.startswith('gene_symbol:'):
+                                # Extract gene symbol
                                 gene_symbol_parts = part.split(':', 1)
                                 if len(gene_symbol_parts) > 1:
                                     gene_symbol = gene_symbol_parts[1]
@@ -47,26 +46,31 @@ def process_fasta_in_memory(input_file):
                             if part.startswith('>'):
                                 transcript_id = part[1:] # Store without '>'
 
+                        # --- MODIFICATION START: Check for gene_symbol ---
                         if gene_symbol and transcript_id:
                             # Store the modified header *without* the leading '>'
+                            # Format: gene_symbol|transcript_id
                             new_header = f"{gene_symbol}|{transcript_id}"
                             modified_headers.append(new_header)
                             valid_header_processed = True # Mark this header as valid and processed
+                        elif transcript_id and not gene_symbol:
+                            # Skip if gene_symbol is missing, but log it
+                            # print(f"Skipping entry on line {line_num}: Missing 'gene_symbol:' field in header: {line}")
+                            skipped_no_symbol += 1
+                            valid_header_processed = False # Ensure sequence is skipped
                         else:
-                            # Raise error if essential parts are missing
+                            # Handle other missing info cases (e.g., missing transcript ID)
                             missing_parts = []
-                            if not gene_symbol: missing_parts.append("'gene:' field")
                             if not transcript_id: missing_parts.append("transcript ID (first part after '>')")
+                            if not gene_symbol: missing_parts.append("'gene_symbol:' field") # Should be caught above, but good practice
                             raise ValueError(f"Header missing required information: {', '.join(missing_parts)}")
+                        # --- MODIFICATION END ---
 
                     except (IndexError, ValueError) as e:
-                        print(f"Skipping malformed header on line {line_num}: {line} - Error: {e}", file=sys.stderr) # Use stderr for errors/warnings
+                        print(f"Skipping malformed header on line {line_num}: {line} - Error: {e}")
                         # Keep valid_header_processed as False, sequence lines following this will be ignored
 
                 elif valid_header_processed: # Only add sequence lines if the *last* header processed was valid
-                    # Basic sequence validation (optional): check for unexpected characters
-                    # if not all(c in 'ACGTNacgtn' for c in line):
-                    #     print(f"Warning: Non-standard characters found in sequence on line {line_num} for header {modified_headers[-1]}")
                     current_sequence += line
 
             # Add the last sequence if it exists and belongs to a valid header
@@ -74,18 +78,23 @@ def process_fasta_in_memory(input_file):
                 sequences.append(current_sequence)
 
     except FileNotFoundError:
-        print(f"Error: Input FASTA file not found at {input_file}", file=sys.stderr)
+        print(f"Error: Input FASTA file not found at {input_file}")
         return [], [] # Return empty lists on file error
     except Exception as e:
-        print(f"An unexpected error occurred during FASTA processing: {e}", file=sys.stderr)
+        print(f"An unexpected error occurred during FASTA processing: {e}")
         return [], [] # Return empty lists on other errors
+
+    # Report skipped entries due to missing gene symbol
+    if skipped_no_symbol > 0:
+        print(f"Note: Skipped {skipped_no_symbol} FASTA entries because they lacked the 'gene_symbol:' field.")
+
 
     # Final check for consistency
     if len(modified_headers) != len(sequences):
          # This condition might occur if the file ends abruptly after a header without sequence,
-         # or if the last header was invalid.
+         # or if the last header was invalid/skipped.
          print(f"Warning: Final count mismatch between processed headers ({len(modified_headers)}) and sequences ({len(sequences)}). "
-               f"This might be due to the last entry or skipped malformed headers.", file=sys.stderr)
+               f"This might be due to the last entry or skipped entries.")
          # Depending on requirements, you might want to adjust lists here, but often proceeding is acceptable.
 
     return modified_headers, sequences
@@ -98,10 +107,11 @@ def sanitize_filename(header):
     # sanitized = sanitized.replace(':', '_').replace(' ', '_')
     return sanitized
 
-# --- Main Execution Logic ---
-def main():
+# --- Main script logic starts here ---
+
+if __name__ == "__main__":
     # Command-line argument parsing
-    parser = argparse.ArgumentParser(description="Process a FASTA file for kmer analysis, generating CSV files with kmer counts and transcript occurrences, maintaining kmer order.")
+    parser = argparse.ArgumentParser(description="Process a FASTA file for kmer analysis, generating CSV files with kmer counts and transcript occurrences, maintaining kmer order. CSV filenames use gene_symbol_transcriptID.")
     parser.add_argument('--input_fasta', required=True, help="Path to the original input FASTA file.")
     parser.add_argument('--output_dir', required=True, help="Path to the output directory where CSV files will be saved.")
     parser.add_argument('--kmer_length', type=int, default=50, help="Length of the kmers to analyze (default: 50).")
@@ -110,13 +120,14 @@ def main():
 
     # --- 1. Process FASTA in memory ---
     print(f"Processing FASTA file: {args.input_fasta}")
+    # transcript_headers now contain "gene_symbol|transcript_id"
     transcript_headers, transcripts = process_fasta_in_memory(args.input_fasta)
 
     if not transcript_headers or not transcripts:
-        print("No valid transcript data processed. Exiting.", file=sys.stderr)
-        sys.exit(1) # Exit with an error code if FASTA processing failed or yielded no data
+        print("No valid transcript data processed (ensure entries have 'gene_symbol:' field). Exiting.")
+        exit(1) # Exit with an error code if FASTA processing failed or yielded no data
 
-    print(f"Successfully processed {len(transcript_headers)} transcripts in memory.")
+    print(f"Successfully processed {len(transcript_headers)} transcripts with gene symbols in memory.")
 
     # --- 2. Prepare output directory ---
     output_directory = args.output_dir
@@ -124,19 +135,19 @@ def main():
         os.makedirs(output_directory, exist_ok=True)
         print(f"Output directory set to: {output_directory}")
     except OSError as e:
-        print(f"Error creating output directory {output_directory}: {e}", file=sys.stderr)
-        sys.exit(1)
+        print(f"Error creating output directory {output_directory}: {e}")
+        exit(1)
 
     # --- 3. Kmer analysis ---
     kmer_length = args.kmer_length
     if kmer_length <= 0:
-        print("Error: kmer_length must be a positive integer.", file=sys.stderr)
-        sys.exit(1)
+        print("Error: kmer_length must be a positive integer.")
+        exit(1)
 
     global_kmer_counts = defaultdict(int)
     kmer_transcript_sets = defaultdict(set) # Stores indices of transcripts containing the kmer
 
-    print(f"Counting {kmer_length}-mers globally across all transcripts...")
+    print(f"Counting {kmer_length}-mers globally across all processed transcripts...")
     # Kmer counting and tracking transcripts that contain them
     skipped_sequences_count = 0
     for isoform_index, sequence in enumerate(transcripts):
@@ -161,14 +172,19 @@ def main():
     # --- Creating CSV files for each isoform ---
     csv_generated_count = 0
     for isoform_index, header in enumerate(transcript_headers):
+        # header is now "gene_symbol|transcript_id"
         sequence = transcripts[isoform_index]
 
         # Skip if the sequence was too short for kmer analysis (already checked, but good practice)
         if len(sequence) < kmer_length:
             continue
 
+        # --- MODIFICATION START: Use sanitized header directly for filename ---
+        # sanitize_filename will convert "gene_symbol|transcript_id" to "gene_symbol_transcript_id"
         sanitized_header = sanitize_filename(header)
         output_csv_path = os.path.join(output_directory, sanitized_header + '_kmers.csv')
+        # --- MODIFICATION END ---
+
 
         # --- Kmer selection and ordering logic for the current isoform ---
 
@@ -208,6 +224,7 @@ def main():
 
                 # Format 'Present_in_Transcripts' field using sanitized headers
                 transcript_indices = sorted(list(kmer_transcript_sets.get(kmer, set()))) # Get indices, sort them
+                # Use the already modified headers (gene_symbol|transcript_id) and sanitize them for the column
                 sanitized_transcript_list = [sanitize_filename(transcript_headers[idx]) for idx in transcript_indices]
 
                 if len(sanitized_transcript_list) > 1:
@@ -217,7 +234,7 @@ def main():
                 else:
                      # This case should ideally not happen if global_freq > 0
                      transcripts_containing_kmer = "Error_TranscriptNotFound"
-                     print(f"Warning: Kmer {kmer} found with global_freq {global_freq} but no transcript index in kmer_transcript_sets for {header}.", file=sys.stderr)
+                     print(f"Warning: Kmer {kmer} found with global_freq {global_freq} but no transcript index in kmer_transcript_sets for {header}.")
 
                 rows_to_write_ordered.append((kmer, local_freq, global_freq, transcripts_containing_kmer))
 
@@ -253,17 +270,11 @@ def main():
                     # print(f"No kmers met the final filtering criteria for {header}.")
 
             except IOError as e:
-                print(f"Error writing CSV file {output_csv_path}: {e}", file=sys.stderr)
+                print(f"Error writing CSV file {output_csv_path}: {e}")
             except Exception as e:
-                 print(f"An unexpected error occurred while writing CSV for {header}: {e}", file=sys.stderr)
+                 print(f"An unexpected error occurred while writing CSV for {header}: {e}")
         # else:
             # print(f"No kmers met the minimum global frequency criteria ({min_global_frequency_for_isoform}) for {header}.")
 
 
     print(f"\nKmer analysis complete. Generated {csv_generated_count} CSV files in: {output_directory}")
-
-
-# --- Call the main function only when the script is executed directly ---
-if __name__ == "__main__":
-    main()
-
