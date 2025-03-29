@@ -14,7 +14,7 @@ This pipeline consists of four main steps:
 
 ```bash
 # Clone the repository (or download)
-git clone https://github.com/your_username/gaussf_pipeline.git
+git clone https://github.com/QiangSu/gaussf_pipeline.git
 cd gaussf_pipeline
 
 # Install using pip (editable mode recommended for development)
