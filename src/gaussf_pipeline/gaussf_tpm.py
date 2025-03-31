@@ -6,6 +6,7 @@ import argparse
 import re
 from tqdm import tqdm  # Import tqdm for the progress bar
 import sys # Good practice to import sys for potential exit calls or stderr
+# import numpy as np # Import if using np.inf in gaussian_cdf
 
 # --- Function Definitions ---
 
@@ -14,6 +15,9 @@ def suitable_criteria_for_GC(xc_fitted_local, w_fitted_local):
     # Ensure w_fitted_local is positive before comparison
     if w_fitted_local <= 0:
         return False
+    # Basic sanity check: mean should be reasonably larger than half the width,
+    # especially relevant if GC content is expected to be > 0.
+    # This helps avoid fits where the peak is near or below zero GC content.
     return xc_fitted_local > 0.5 * w_fitted_local
 
 # Function to calculate total_normalized_kmer_count across all CSV files
@@ -81,47 +85,71 @@ def gaussian_cdf(x, A0, A, xc, w):
     # Add safeguard against non-positive w
     if w <= 0:
         # Return a large value to discourage the fitter from choosing w <= 0
-        return 1e10 * (1 + abs(x)) # Or np.inf if numpy is imported
+        # Using np.inf requires importing numpy as np
+        # return np.inf
+        # Ensure x is treated as float for arithmetic operation
+        try:
+            x_float = float(x)
+        except (ValueError, TypeError):
+             # Handle cases where x might not be convertible to float, though unlikely if data is cleaned
+             return 1e10 # Return a large constant if conversion fails
+        return 1e10 * (1 + abs(x_float)) # Avoid inf to prevent potential issues downstream
     return A0 + A * norm.cdf(x, loc=xc, scale=w) # Use norm.cdf directly
 
 # Gaussian CDF with fixed parameters for Normalized K-mer Count
 def gaussian_cdf_fixed(x, A0, A, xc_fixed, w_fixed):
     # w_fixed should already be validated before being passed here
+    # No need for w <= 0 check here as it's checked before fixing
     return A0 + A * norm.cdf(x, loc=xc_fixed, scale=w_fixed)
 
 # Gaussian CDF with fixed parameters for Count
 def gaussian_cdf_fixed_count(x, A0, A, xc_fixed, w_fixed):
     # w_fixed should already be validated before being passed here
+    # No need for w <= 0 check here as it's checked before fixing
     return A0 + A * norm.cdf(x, loc=xc_fixed, scale=w_fixed)
 
-# Extract gene name and transcript ID from filename
+# --- NEW Function to Extract Gene Name and Transcript ID by underscore position ---
 def extract_gene_transcript_id(filename):
-    # Match for mouse (Mus) data with transcript ID and hyphen in gene name
-    match_mus = re.search(r'([\w.-]+)_(ENSMUST[0-9]+(?:.\d+)?)_kmers', filename) # Allow dots/hyphens in gene, capture version with transcript
-    # Match for human (Homo sapiens) data with transcript ID and hyphen in gene name
-    match_human = re.search(r'([\w.-]+)_(ENST[0-9]+(?:.\d+)?)_kmers', filename) # Allow dots/hyphens in gene, capture version with transcript
-    # Match for files with no transcript ID (only gene name with hyphen/dot)
-    match_no_transcript = re.search(r'([\w.-]+)_kmers', filename)
+    """
+    Extracts Gene Name and Transcript ID based on underscore positions.
+    Gene Name: Content before the first underscore.
+    Transcript ID: Content strictly between the first and second underscore.
 
-    if match_mus:
-        gene_name = match_mus.group(1)
-        transcript_id = match_mus.group(2)
-        return gene_name, transcript_id
-    elif match_human:
-        gene_name = match_human.group(1)
-        transcript_id = match_human.group(2)
-        return gene_name, transcript_id
-    elif match_no_transcript:
-        # Check if it didn't match the transcript patterns first
-        if not (re.search(r'_(ENSMUST[0-9]+)', filename) or re.search(r'_(ENST[0-9]+)', filename)):
-             gene_name = match_no_transcript.group(1)
-             return gene_name, "-" # Return hyphen for missing transcript ID
-    # Fallback if no pattern matches
-    base = os.path.basename(filename)
-    name_part = base.split('_kmers')[0] # Try a simple split
-    print(f"Warning: Could not parse standard gene/transcript from '{filename}'. Using '{name_part}' as Gene_Name.", file=sys.stderr)
-    return name_part, "Unknown"
+    Args:
+        filename (str): The input filename (just the name, not the path).
 
+    Returns:
+        tuple: (gene_name, transcript_id)
+               Returns (FileNamePart, "-") if fewer than two underscores exist.
+    """
+    # Split the filename by the underscore character
+    parts = filename.split('_')
+    num_parts = len(parts)
+
+    if num_parts == 1:
+        # No underscores found. Treat the whole relevant part as the gene name.
+        # Attempt to remove common suffixes for a cleaner name.
+        gene_name = filename
+        if gene_name.endswith('_merged_normalized.csv'):
+             gene_name = gene_name[:-len('_merged_normalized.csv')]
+        elif gene_name.endswith('_kmers.csv'):
+             gene_name = gene_name[:-len('_kmers.csv')]
+        elif gene_name.endswith('.csv'):
+             gene_name = gene_name[:-len('.csv')]
+        transcript_id = "-" # No underscores means no transcript ID by this rule
+    elif num_parts == 2:
+        # Exactly one underscore. Gene name is the first part.
+        # No content *between* first and second underscore.
+        gene_name = parts[0]
+        transcript_id = "-"
+    else: # num_parts >= 3
+        # Two or more underscores. Gene name is the first part.
+        # Transcript ID is the second part (between first and second underscore).
+        gene_name = parts[0]
+        transcript_id = parts[1]
+
+    return gene_name, transcript_id
+# --- End of NEW Function ---
 
 # --- Main Execution Logic ---
 def main():
@@ -163,8 +191,9 @@ def main():
         gene_name, transcript_id = "Unknown", "Unknown" # Initialize defaults
 
         try:
-            # Extract gene name and transcript ID from the filename
+            # --- Use the NEW extraction function ---
             gene_name, transcript_id = extract_gene_transcript_id(filename)
+            # ---
 
             # Read the CSV file into a DataFrame
             df = pd.read_csv(filepath)
@@ -173,7 +202,7 @@ def main():
             if df.empty:
                 print(f"Warning: File {filename} is empty. Skipping.", file=sys.stderr)
                 results.append({
-                    'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id,
+                    'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id, # Use parsed names
                     'Global_Frequency': 'N/A', 'Present_in_Transcripts': 'N/A', 'Transcript_Length': 'N/A',
                     'Sum or Fitted A (Abundance) for Normalized Count': '0.00',
                     'Sum or Fitted A (Abundance) for Count': '0.00',
@@ -186,11 +215,16 @@ def main():
             if not all(col in df.columns for col in required_columns):
                 missing_cols = [col for col in required_columns if col not in df.columns]
                 print(f"Warning: File {filename} is missing required columns: {missing_cols}. Skipping.", file=sys.stderr)
+                # Attempt to get metadata even if some columns are missing
+                global_freq_val = df.get('Global_Frequency', pd.Series(['N/A'])).iloc[0] if not df.empty else 'N/A'
+                present_in_val = df.get('Present_in_Transcripts', pd.Series(['N/A'])).iloc[0] if not df.empty else 'N/A'
+                length_val = df.get('Transcript_Length', pd.Series(['N/A'])).iloc[0] if not df.empty else 'N/A'
+
                 results.append({
-                    'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id,
-                    'Global_Frequency': df.get('Global_Frequency', pd.Series(['N/A']))[0], # Try to get some info
-                    'Present_in_Transcripts': df.get('Present_in_Transcripts', pd.Series(['N/A']))[0],
-                    'Transcript_Length': df.get('Transcript_Length', pd.Series(['N/A']))[0],
+                    'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id, # Use parsed names
+                    'Global_Frequency': global_freq_val,
+                    'Present_in_Transcripts': present_in_val,
+                    'Transcript_Length': length_val,
                     'Sum or Fitted A (Abundance) for Normalized Count': '0.00',
                     'Sum or Fitted A (Abundance) for Count': '0.00',
                     'Fixed Mean (xc)': 'N/A', 'Fixed Standard Deviation (w)': 'N/A',
@@ -199,6 +233,7 @@ def main():
                 continue
 
             # Extract metadata (assuming it's constant per file)
+            # Use .iloc[0] safely after checking df is not empty and columns exist
             transcript_length = df['Transcript_Length'].iloc[0]
             global_frequency = df['Global_Frequency'].iloc[0]
             present_in_transcripts = df['Present_in_Transcripts'].iloc[0]
@@ -207,26 +242,28 @@ def main():
             df['GC_Content'] = df['kmer'].apply(calculate_gc_content)
 
             # Group by GC content and sum frequencies
-            gc_content_data = df.groupby('GC_Content').agg({
+            gc_content_data = df.groupby('GC_Content', dropna=False).agg({ # Include potential NaN group initially
                 'Local_Frequency': 'sum',
                 'Normalized_K-mer_Count': 'sum',
                 'Count': 'sum'
             }).reset_index()
 
-            # Filter out rows where GC_Content might be NaN or Inf if calculation failed
+            # Filter out rows where GC_Content might be NaN or Inf if calculation failed or kmer was invalid
             gc_content_data = gc_content_data.dropna(subset=['GC_Content'])
-            gc_content_data = gc_content_data[gc_content_data['GC_Content'].apply(lambda x: isinstance(x, (int, float)))]
+            # Ensure GC_Content is numeric after potential grouping issues
+            gc_content_data = gc_content_data[pd.to_numeric(gc_content_data['GC_Content'], errors='coerce').notna()]
+            gc_content_data['GC_Content'] = gc_content_data['GC_Content'].astype(float)
 
 
-            # Check if there are at least args.threshold distinct GC contents *after* grouping
+            # Check if there are at least args.threshold distinct GC contents *after* grouping and cleaning
             if len(gc_content_data) < args.threshold:
-                report_reason = 'Not enough distinct GC contents'
+                report_reason = f'Not enough distinct GC contents ({len(gc_content_data)} < {args.threshold})'
                 sum_normalized_kmer_count = gc_content_data['Normalized_K-mer_Count'].sum()
                 # Normalize the sum by multiplying by 1000000/total_normalized_kmer_count (handle division by zero)
-                normalized_sum = (sum_normalized_kmer_count * 1_000_000 / total_normalized_kmer_count) if total_normalized_kmer_count else 0
+                normalized_sum = (sum_normalized_kmer_count * 1_000_000 / total_normalized_kmer_count) if total_normalized_kmer_count > 0 else 0.0
                 sum_count = gc_content_data['Count'].sum()
                 results.append({
-                    'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id,
+                    'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id, # Use parsed names
                     'Global_Frequency': global_frequency, 'Present_in_Transcripts': present_in_transcripts, 'Transcript_Length': transcript_length,
                     'Sum or Fitted A (Abundance) for Normalized Count': '{:.2f}'.format(normalized_sum),
                     'Sum or Fitted A (Abundance) for Count': '{:.2f}'.format(sum_count),
@@ -249,14 +286,14 @@ def main():
             y_data_normalized = gc_content_data_sorted['Cumulative_Normalized_Count'].values
             y_data_count = gc_content_data_sorted['Cumulative_Count'].values
 
-            # Check for sufficient variance in x_data
-            if x_data.std() < 1e-6:
-                 report_reason = 'GC content variance too low for fitting'
+            # Check for sufficient variance in x_data and non-empty data
+            if len(x_data) < 2 or x_data.std() < 1e-6:
+                 report_reason = 'GC content variance too low or insufficient points for fitting'
                  sum_normalized_kmer_count = gc_content_data_sorted['Normalized_K-mer_Count'].sum()
-                 normalized_sum = (sum_normalized_kmer_count * 1_000_000 / total_normalized_kmer_count) if total_normalized_kmer_count else 0
+                 normalized_sum = (sum_normalized_kmer_count * 1_000_000 / total_normalized_kmer_count) if total_normalized_kmer_count > 0 else 0.0
                  sum_count = gc_content_data_sorted['Count'].sum()
                  results.append({
-                     'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id,
+                     'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id, # Use parsed names
                      'Global_Frequency': global_frequency, 'Present_in_Transcripts': present_in_transcripts, 'Transcript_Length': transcript_length,
                      'Sum or Fitted A (Abundance) for Normalized Count': '{:.2f}'.format(normalized_sum),
                      'Sum or Fitted A (Abundance) for Count': '{:.2f}'.format(sum_count),
@@ -266,45 +303,68 @@ def main():
                  continue
 
             # Fit the Gaussian CDF to Cumulative Local Frequency to get initial xc and w
-            # Provide reasonable bounds, especially for w > 0
-            bounds_local = ([min(y_data_local)-abs(min(y_data_local)), 0, min(x_data), 1e-3], # A0_min, A_min=0, xc_min, w_min > 0
-                            [max(y_data_local)+abs(max(y_data_local)), (max(y_data_local) - min(y_data_local)) * 1.5, max(x_data), max(x_data)-min(x_data)]) # A0_max, A_max, xc_max, w_max
-            initial_guesses_local = [min(y_data_local), max(y_data_local) - min(y_data_local), x_data.mean(), x_data.std() if x_data.std() > 1e-3 else 1.0]
-            # Ensure initial w guess is positive
-            if initial_guesses_local[3] <= 0: initial_guesses_local[3] = 1.0
+            # Provide reasonable bounds, especially for w > 0 and A > 0
+            # Calculate dynamic bounds based on data range
+            y_local_min, y_local_max = y_data_local.min(), y_data_local.max()
+            y_local_range = y_local_max - y_local_min if y_local_max > y_local_min else 1.0 # Avoid zero range
+            x_min, x_max = x_data.min(), x_data.max()
+            x_range = x_max - x_min if x_max > x_min else 1.0 # Avoid zero range
+
+            bounds_local = ([y_local_min - y_local_range * 0.5, 0, x_min, 1e-3], # A0_min, A_min=0, xc_min, w_min > 0
+                            [y_local_max + y_local_range * 0.5, y_local_range * 1.5, x_max, x_range]) # A0_max, A_max, xc_max, w_max
+
+            # Sensible initial guesses
+            initial_guesses_local = [y_local_min, y_local_range, x_data.mean(), x_data.std() if x_data.std() > 1e-3 else 1.0]
+            # Ensure initial w guess is positive and within bounds
+            initial_guesses_local[3] = max(bounds_local[0][3], min(bounds_local[1][3], initial_guesses_local[3]))
+            # Ensure initial xc guess is within bounds
+            initial_guesses_local[2] = max(bounds_local[0][2], min(bounds_local[1][2], initial_guesses_local[2]))
+
 
             try:
-                popt_local, pcov_local = curve_fit(gaussian_cdf, x_data, y_data_local, p0=initial_guesses_local, bounds=bounds_local, maxfev=5000)
+                popt_local, pcov_local = curve_fit(gaussian_cdf, x_data, y_data_local, p0=initial_guesses_local, bounds=bounds_local, maxfev=10000, method='trf') # Try 'trf' or 'dogbox' for bounds
                 A0_fitted_local, A_fitted_local, xc_fitted_local, w_fitted_local = popt_local
 
                 # Check if the fitted mean and standard deviation meet the suitability criteria
                 if suitable_criteria_for_GC(xc_fitted_local, w_fitted_local):
                     # Additional fitting for Normalized K-mer Count and Count using fixed xc and w
-                    # Bounds for A0 and A
-                    bounds_norm = ([min(y_data_normalized)-abs(min(y_data_normalized)), 0],
-                                   [max(y_data_normalized)+abs(max(y_data_normalized)), (max(y_data_normalized) - min(y_data_normalized)) * 1.5])
-                    initial_guesses_normalized = [min(y_data_normalized), max(y_data_normalized) - min(y_data_normalized)]
+
+                    # --- Normalized Count Fit ---
+                    y_norm_min, y_norm_max = y_data_normalized.min(), y_data_normalized.max()
+                    y_norm_range = y_norm_max - y_norm_min if y_norm_max > y_norm_min else 1e-9 # Avoid zero, allow small values
+
+                    bounds_norm = ([y_norm_min - y_norm_range * 0.5, 0], # A0_min, A_min=0
+                                   [y_norm_max + y_norm_range * 0.5, y_norm_range * 1.5]) # A0_max, A_max
+                    initial_guesses_normalized = [y_norm_min, y_norm_range]
+                    initial_guesses_normalized[1] = max(bounds_norm[0][1], min(bounds_norm[1][1], initial_guesses_normalized[1])) # Ensure A guess > 0
+
                     popt_normalized, pcov_normalized = curve_fit(
-                        lambda x, A0, A: gaussian_cdf_fixed(x, A0, A, xc_fitted_local, w_fitted_local),
-                        x_data, y_data_normalized, p0=initial_guesses_normalized, bounds=bounds_norm, maxfev=5000
+                        lambda x, A0, A: gaussian_cdf_fixed(x, A0, A, xc_fixed=xc_fitted_local, w_fixed=w_fitted_local),
+                        x_data, y_data_normalized, p0=initial_guesses_normalized, bounds=bounds_norm, maxfev=10000, method='trf'
                     )
                     A0_fitted_normalized, A_fitted_normalized = popt_normalized
 
                     # Normalize A_fitted_normalized (handle division by zero)
-                    A_fitted_normalized_tpm = (A_fitted_normalized * 1_000_000 / total_normalized_kmer_count) if total_normalized_kmer_count else 0
+                    A_fitted_normalized_tpm = (A_fitted_normalized * 1_000_000 / total_normalized_kmer_count) if total_normalized_kmer_count > 0 else 0.0
 
-                    bounds_count = ([min(y_data_count)-abs(min(y_data_count)), 0],
-                                    [max(y_data_count)+abs(max(y_data_count)), (max(y_data_count) - min(y_data_count)) * 1.5])
-                    initial_guesses_count = [min(y_data_count), max(y_data_count) - min(y_data_count)]
+                    # --- Count Fit ---
+                    y_count_min, y_count_max = y_data_count.min(), y_data_count.max()
+                    y_count_range = y_count_max - y_count_min if y_count_max > y_count_min else 1.0 # Avoid zero
+
+                    bounds_count = ([y_count_min - y_count_range * 0.5, 0], # A0_min, A_min=0
+                                    [y_count_max + y_count_range * 0.5, y_count_range * 1.5]) # A0_max, A_max
+                    initial_guesses_count = [y_count_min, y_count_range]
+                    initial_guesses_count[1] = max(bounds_count[0][1], min(bounds_count[1][1], initial_guesses_count[1])) # Ensure A guess > 0
+
                     popt_count, pcov_count = curve_fit(
-                        lambda x, A0, A: gaussian_cdf_fixed_count(x, A0, A, xc_fitted_local, w_fitted_local),
-                        x_data, y_data_count, p0=initial_guesses_count, bounds=bounds_count, maxfev=5000
+                        lambda x, A0, A: gaussian_cdf_fixed_count(x, A0, A, xc_fixed=xc_fitted_local, w_fixed=w_fitted_local),
+                        x_data, y_data_count, p0=initial_guesses_count, bounds=bounds_count, maxfev=10000, method='trf'
                     )
                     A0_fitted_count, A_fitted_count = popt_count
 
                     # Append successful fitting results
                     results.append({
-                        'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id,
+                        'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id, # Use parsed names
                         'Global_Frequency': global_frequency, 'Present_in_Transcripts': present_in_transcripts, 'Transcript_Length': transcript_length,
                         'Sum or Fitted A (Abundance) for Normalized Count': '{:.2f}'.format(A_fitted_normalized_tpm),
                         'Sum or Fitted A (Abundance) for Count': '{:.2f}'.format(A_fitted_count),
@@ -313,56 +373,83 @@ def main():
                         'Report': 'OK'
                     })
                 else:
-                    # Use the specific reason from the criteria function if possible, otherwise generic message
-                    report_reason = f'Unsuitable Fit Parameters (xc={xc_fitted_local:.2f}, w={w_fitted_local:.2f})'
-                    raise ValueError(report_reason) # Raise error to be caught below
+                    # Fit deemed unsuitable based on xc vs w relationship
+                    report_reason = f'Unsuitable Fit Parameters (xc={xc_fitted_local:.2f}, w={w_fitted_local:.2f}) fails xc > 0.5*w check'
+                    # Raise ValueError to be caught by the except block below, forcing sum calculation
+                    raise ValueError(report_reason)
 
             except (RuntimeError, ValueError) as e:
-                # Handle fitting failures or unsuitable parameters by reporting sums
+                # Handle fitting failures (RuntimeError from curve_fit) or unsuitable parameters (ValueError raised above)
+                # Report sums as fallback
                 error_message = str(e)
-                sum_normalized_kmer_count = gc_content_data_sorted['Normalized_K-mer_Count'].sum()
-                normalized_sum = (sum_normalized_kmer_count * 1_000_000 / total_normalized_kmer_count) if total_normalized_kmer_count else 0
-                sum_count = gc_content_data_sorted['Count'].sum()
+                # Check if we have the sorted data, otherwise calculate sum from original grouped data
+                if 'gc_content_data_sorted' in locals():
+                    sum_normalized_kmer_count = gc_content_data_sorted['Normalized_K-mer_Count'].sum()
+                    sum_count = gc_content_data_sorted['Count'].sum()
+                else:
+                    sum_normalized_kmer_count = gc_content_data['Normalized_K-mer_Count'].sum()
+                    sum_count = gc_content_data['Count'].sum()
+
+                normalized_sum = (sum_normalized_kmer_count * 1_000_000 / total_normalized_kmer_count) if total_normalized_kmer_count > 0 else 0.0
+
+                # Determine the report message based on the error
+                report_prefix = 'Fit Failed' if isinstance(e, RuntimeError) else 'Fit Unsuitable'
+                final_report = f'{report_prefix} - Using Sum - {error_message}'
+
                 results.append({
-                    'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id,
+                    'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id, # Use parsed names
                     'Global_Frequency': global_frequency, 'Present_in_Transcripts': present_in_transcripts, 'Transcript_Length': transcript_length,
                     'Sum or Fitted A (Abundance) for Normalized Count': '{:.2f}'.format(normalized_sum),
                     'Sum or Fitted A (Abundance) for Count': '{:.2f}'.format(sum_count),
                     'Fixed Mean (xc)': 'N/A', 'Fixed Standard Deviation (w)': 'N/A',
-                    'Report': f'Fit Failed or Unsuitable - {error_message}'
+                    'Report': final_report
                 })
 
         except FileNotFoundError:
             print(f"Error: File not found {filepath}. Skipping.", file=sys.stderr)
-            # Append minimal info if possible
+            # Use names parsed by the new function even if file not found later
+            gene_name_parsed, transcript_id_parsed = extract_gene_transcript_id(filename)
             results.append({
-                'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id,
+                'File': filename, 'Gene_Name': gene_name_parsed, 'Transcript_ID': transcript_id_parsed,
                 'Global_Frequency': 'N/A', 'Present_in_Transcripts': 'N/A', 'Transcript_Length': 'N/A',
                 'Sum or Fitted A (Abundance) for Normalized Count': '0.00',
                 'Sum or Fitted A (Abundance) for Count': '0.00',
                 'Fixed Mean (xc)': 'N/A', 'Fixed Standard Deviation (w)': 'N/A',
-                'Report': 'File not found during processing'
+                'Report': 'File not found during processing loop'
             })
         except pd.errors.EmptyDataError:
              print(f"Warning: File {filename} is empty. Skipping.", file=sys.stderr)
+             # Use names parsed by the new function
+             gene_name_parsed, transcript_id_parsed = extract_gene_transcript_id(filename)
              results.append({
-                 'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id,
+                 'File': filename, 'Gene_Name': gene_name_parsed, 'Transcript_ID': transcript_id_parsed,
                  'Global_Frequency': 'N/A', 'Present_in_Transcripts': 'N/A', 'Transcript_Length': 'N/A',
                  'Sum or Fitted A (Abundance) for Normalized Count': '0.00',
                  'Sum or Fitted A (Abundance) for Count': '0.00',
                  'Fixed Mean (xc)': 'N/A', 'Fixed Standard Deviation (w)': 'N/A',
-                 'Report': 'Empty input file'
+                 'Report': 'Empty input file (pd.errors.EmptyDataError)'
              })
         except Exception as e:
-            print(f"Error processing file {filename}: {e}", file=sys.stderr)
-            # Append error information
+            print(f"Error processing file {filename}: {type(e).__name__} - {e}", file=sys.stderr)
+            # Use names parsed by the new function
+            gene_name_parsed, transcript_id_parsed = extract_gene_transcript_id(filename)
+            # Attempt to retrieve metadata if possible, otherwise use 'Error'
+            try:
+                 global_freq_val = df.get('Global_Frequency', pd.Series(['Error'])).iloc[0] if 'df' in locals() and not df.empty else 'Error'
+                 present_in_val = df.get('Present_in_Transcripts', pd.Series(['Error'])).iloc[0] if 'df' in locals() and not df.empty else 'Error'
+                 length_val = df.get('Transcript_Length', pd.Series(['Error'])).iloc[0] if 'df' in locals() and not df.empty else 'Error'
+            except:
+                 global_freq_val, present_in_val, length_val = 'Error', 'Error', 'Error'
+
             results.append({
-                'File': filename, 'Gene_Name': gene_name, 'Transcript_ID': transcript_id,
-                'Global_Frequency': 'Error', 'Present_in_Transcripts': 'Error', 'Transcript_Length': 'Error',
+                'File': filename, 'Gene_Name': gene_name_parsed, 'Transcript_ID': transcript_id_parsed,
+                'Global_Frequency': global_freq_val,
+                'Present_in_Transcripts': present_in_val,
+                'Transcript_Length': length_val,
                 'Sum or Fitted A (Abundance) for Normalized Count': 'Error',
                 'Sum or Fitted A (Abundance) for Count': 'Error',
                 'Fixed Mean (xc)': 'Error', 'Fixed Standard Deviation (w)': 'Error',
-                'Report': f'Unexpected Error: {e}'
+                'Report': f'Unexpected Error: {type(e).__name__} - {e}'
             })
 
     # --- Final Output ---
@@ -373,11 +460,28 @@ def main():
     # Create results DataFrame
     results_df = pd.DataFrame(results)
 
+    # Define column order for clarity
+    column_order = [
+        'File', 'Gene_Name', 'Transcript_ID', 'Transcript_Length',
+        'Global_Frequency', 'Present_in_Transcripts',
+        'Sum or Fitted A (Abundance) for Normalized Count',
+        'Sum or Fitted A (Abundance) for Count',
+        'Fixed Mean (xc)', 'Fixed Standard Deviation (w)',
+        'Report'
+    ]
+    # Reorder columns, handling potential missing columns if errors occurred
+    results_df = results_df.reindex(columns=column_order, fill_value='N/A')
+
+
     # Ensure the output directory exists
     try:
         output_directory = os.path.dirname(args.output)
-        if output_directory: # Only create if path includes a directory
-            os.makedirs(output_directory, exist_ok=True)
+        if output_directory and not os.path.exists(output_directory): # Only create if path includes a directory and it doesn't exist
+             print(f"Creating output directory: {output_directory}")
+             os.makedirs(output_directory, exist_ok=True)
+        elif not output_directory:
+             print("Output path does not specify a directory. Saving to current directory.")
+
         # Save to CSV file specified by the command-line argument
         results_df.to_csv(args.output, index=False)
         print(f"\nResults successfully saved to {args.output}")
@@ -385,10 +489,9 @@ def main():
         print(f"Error: Could not create output directory or save file at {args.output}: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"Error: Failed to save results to {args.output}: {e}", file=sys.stderr)
+        print(f"Error: Failed to save results to {args.output}: {type(e).__name__} - {e}", file=sys.stderr)
         sys.exit(1)
 
 # --- Call the main function only when the script is executed directly ---
 if __name__ == "__main__":
     main()
-
