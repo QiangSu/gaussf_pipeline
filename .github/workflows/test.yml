@@ -1,56 +1,74 @@
-name: Run Test Suite
+name: Test GaussF Pipeline
 
 on:
   push:
-    branches:
-      - master
+    branches: [ main ] # Or your default branch name
   pull_request:
-    branches:
-      - master
+    branches: [ main ] # Or your default branch name
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # Use a standard Linux runner
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4 # Use the latest checkout action
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'  # Matches your environment (from your error: python3.12)
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.9' # Choose a Python version compatible with your code
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install .  # Installs gaussf_pipeline package
-          pip install pandas scipy numpy tqdm  # Explicitly install all required dependencies
+    - name: Install dependencies and package
+      run: |
+        python -m pip install --upgrade pip
+        # Install the package itself and any dependencies listed in pyproject.toml
+        pip install .
+        # If you have extra dependencies not listed (like pandas, numpy if used), install them explicitly:
+        # pip install pandas numpy # Example
 
-      - name: Run kmer_freq_dist test
-        run: |
-          python test_data/test_kmer_freq_dist.py
-          ls test_data/output/kmer_freq_dist/*_kmers.csv  # Verify output exists
+    - name: Create output directories
+      run: |
+        mkdir kmer_freq_output
+        mkdir kmer_counts_output
+        mkdir merged_normalized_output
+        mkdir final_output
 
-      - name: Run kmer_counter test
-        run: |
-          python test_data/test_kmer_counter.py
-          ls test_data/output/kmer_counter.csv  # Verify output exists
+    - name: Run kmer_freq_dist.py
+      run: |
+        python src/gaussf_pipeline/kmer_freq_dist.py \
+          --input_fasta test_data/Homo_sapiens.GRCh38_first_200_transcripts.fa \
+          --output_dir kmer_freq_output \
+          --kmer_length 50 \
+          --threshold 3000 # Adjust parameters as needed for testing
 
-      - name: Run merge_normalize test
-        run: |
-          python test_data/test_merge_normalize.py
-          ls test_data/output/*_merged_normalized.csv  # Verify output exists
+    - name: Run kmer_counter.py
+      run: |
+        python src/gaussf_pipeline/kmer_counter.py \
+          --fastq_path test_data/99272-N_extracted_100_raw_2.fastq.gz \
+          --num_threads 2 \
+          --chunk_size 10000 \
+          --csv_input_dir kmer_freq_output \
+          --csv_output_dir kmer_counts_output # Adjust parameters as needed
 
-      - name: Run gaussf_tpm test
-        run: |
-          python test_data/test_gaussf_tpm.py
-          ls test_data/output/results.csv  # Verify output exists
+    - name: Run merge_normalize.py
+      run: |
+        python src/gaussf_pipeline/merge_normalize.py \
+          --kmer_reference_directory kmer_freq_output \
+          --kmer_counts_directory kmer_counts_output \
+          --output_directory merged_normalized_output \
+          --read_length 100 \
+          --k 50 # Ensure k matches kmer_freq_dist, adjust read_length if needed
 
-      - name: Upload test artifacts (if failed)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: |
-            test_data/output/*.csv
-            test_data/output/*.log  # Include logs if your scripts generate them
+    - name: Run gaussf_tpm.py
+      run: |
+        python src/gaussf_pipeline/gaussf_tpm.py \
+          --input merged_normalized_output \
+          --output final_output/results.csv \
+          --threshold 10 # Adjust threshold if needed
+
+    - name: Upload final results artifact (optional)
+      uses: actions/upload-artifact@v4
+      with:
+        name: final-results
+        path: final_output/
