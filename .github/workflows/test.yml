@@ -2,9 +2,9 @@ name: Test GaussF Pipeline
 
 on:
   push:
-    branches: [ main ] # Or your default branch name
+    branches: [ master ] # Or your default branch name
   pull_request:
-    branches: [ main ] # Or your default branch name
+    branches: [ master ] # Or your default branch name
 
 jobs:
   test:
