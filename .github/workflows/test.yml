@@ -2,9 +2,9 @@ name: Test GaussF Pipeline
 
 on:
   push:
-    branches: [ master ] # Or your default branch name
+    branches: [ master, main ] # Trigger on push to master or main branch
   pull_request:
-    branches: [ master ] # Or your default branch name
+    branches: [ master, main ] # Trigger on pull requests targeting master or main
 
 jobs:
   test:
@@ -12,63 +12,106 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4 # Use the latest checkout action
+      uses: actions/checkout@v4 # Checks out your repository code
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.9' # Choose a Python version compatible with your code
+        python-version: '3.9' # Or your preferred Python version
 
     - name: Install dependencies and package
       run: |
-        python -m pip install --upgrade pip
-        # Install the package itself and any dependencies listed in pyproject.toml
+        python -m pip install --upgrade pip wheel setuptools # Ensure build tools are present
+        # --- Option 1: If your project is packaged (e.g., with pyproject.toml/setup.py) ---
+        # This assumes your package setup correctly lists pandas, scipy, numpy, tqdm etc. as dependencies
         pip install .
-        # If you have extra dependencies not listed (like pandas, numpy if used), install them explicitly:
-        # pip install pandas numpy # Example
+
+        # --- Option 2: If not packaged, install dependencies explicitly ---
+        # Uncomment the following line if you prefer explicit installation
+        # pip install pandas scipy numpy tqdm # Add any other dependencies needed by ANY script
+
+        # --- Verify Installation (Optional) ---
+        pip list
 
     - name: Create output directories
       run: |
+        echo "Creating output directories..."
         mkdir kmer_freq_output
         mkdir kmer_counts_output
         mkdir merged_normalized_output
         mkdir final_output
+        echo "Output directories created."
+        ls -l # List contents to confirm creation
 
+    # --- Step 1: kmer_freq_dist.py ---
     - name: Run kmer_freq_dist.py
       run: |
+        echo "Running kmer_freq_dist.py..."
         python src/gaussf_pipeline/kmer_freq_dist.py \
           --input_fasta test_data/Homo_sapiens.GRCh38_first_200_transcripts.fa \
           --output_dir kmer_freq_output \
           --kmer_length 50 \
-          --threshold 3000 # Adjust parameters as needed for testing
+          --threshold 3000
+        echo "kmer_freq_dist.py finished. Output:"
+        ls -lh kmer_freq_output # Show generated files
 
+    - name: Upload kmer_freq_dist results
+      uses: actions/upload-artifact@v4
+      with:
+        name: kmer-frequency-distribution-results # Artifact name
+        path: kmer_freq_output/ # Path to upload (directory contents)
+
+    # --- Step 2: kmer_counter.py ---
     - name: Run kmer_counter.py
       run: |
+        echo "Running kmer_counter.py..."
         python src/gaussf_pipeline/kmer_counter.py \
           --fastq_path test_data/99272-N_extracted_100_raw_2.fastq.gz \
           --num_threads 2 \
           --chunk_size 10000 \
           --csv_input_dir kmer_freq_output \
-          --csv_output_dir kmer_counts_output # Adjust parameters as needed
+          --csv_output_dir kmer_counts_output
+        echo "kmer_counter.py finished. Output:"
+        ls -lh kmer_counts_output # Show generated files
 
+    - name: Upload kmer_counter results
+      uses: actions/upload-artifact@v4
+      with:
+        name: kmer-counts-results # Artifact name
+        path: kmer_counts_output/ # Path to upload
+
+    # --- Step 3: merge_normalize.py ---
     - name: Run merge_normalize.py
       run: |
+        echo "Running merge_normalize.py..."
         python src/gaussf_pipeline/merge_normalize.py \
           --kmer_reference_directory kmer_freq_output \
           --kmer_counts_directory kmer_counts_output \
           --output_directory merged_normalized_output \
           --read_length 100 \
-          --k 50 # Ensure k matches kmer_freq_dist, adjust read_length if needed
+          --k 50
+        echo "merge_normalize.py finished. Output:"
+        ls -lh merged_normalized_output # Show generated files
 
+    - name: Upload merge_normalize results
+      uses: actions/upload-artifact@v4
+      with:
+        name: merged-normalized-results # Artifact name
+        path: merged_normalized_output/ # Path to upload
+
+    # --- Step 4: gaussf_tpm.py ---
     - name: Run gaussf_tpm.py
       run: |
+        echo "Running gaussf_tpm.py..."
         python src/gaussf_pipeline/gaussf_tpm.py \
           --input merged_normalized_output \
           --output final_output/results.csv \
-          --threshold 10 # Adjust threshold if needed
+          --threshold 10
+        echo "gaussf_tpm.py finished. Output:"
+        ls -lh final_output # Show generated files
 
-    - name: Upload final results artifact (optional)
+    - name: Upload final results artifact
       uses: actions/upload-artifact@v4
       with:
-        name: final-results
-        path: final_output/
+        name: final-pipeline-results # Renamed for clarity
+        path: final_output/ # Path to upload
