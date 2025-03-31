@@ -10,6 +10,19 @@ This pipeline consists of four main steps:
 3.  **Merging & Normalization:** Merges counts back to the reference and calculates normalized counts (`merge_normalize.py`).
 4.  **Abundance Estimation:** Applies Gaussian fitting to estimate transcript abundance (`gaussf_tpm.py`).
 
+## Data sample
+## Test Data (`test_data/`)
+
+To facilitate testing and provide concrete examples, the `test_data/` directory includes a small reference and sequencing dataset:
+
+*   **Reference Genome Subset:**
+    *   `Homo_sapiens.GRCh38_first_200_transcripts.fa`: This FASTA file provides a small slice of the human transcriptome (first 200 transcripts, GRCh38 assembly). It serves as the reference sequence set for operations like k-mer generation or indexing within test routines.
+
+*   **Sample Sequencing Data:**
+    *   `99272-N_extracted_100_raw_2.fastq.gz`: This compressed FASTQ file contains a small subset (100 reads) of raw sequencing data. It represents typical input for sequence processing workflows tested by this project.
+
+These files allow developers and users to run basic tests or demonstrations without requiring large external data downloads. They are primarily used by [mention specific test scripts or functionalities if applicable, e.g., "the unit tests in the `tests/` directory"].
+
 ## Installation
 
 ```bash
