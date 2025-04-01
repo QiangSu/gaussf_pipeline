@@ -1,0 +1,233 @@
+# workflow/Snakefile
+
+import os
+
+# --- Configuration ---
+configfile: "config.yaml"
+
+# Define samples from config
+SAMPLES = config["samples"]
+OUTPUT_BASE = config["output_base_dir"]
+
+
+# --- Helper Functions ---
+# Adjust this function based on your *actual* FASTQ naming convention
+def get_fastq(wildcards):
+    """Construct path to FASTQ files based on sample name and read number (R1/R2)."""
+    # Example assumes pattern: {reads_dir}/{sample}_R{read_number}.fastq.gz
+    # Update this logic if your naming is different!
+    # The sample name here is from the SAMPLES list in config.yaml
+    read_map = {"R1": "R1", "R2": "R2"} # Simple mapping for this example
+    # Extracting parts based on the example sample name 'sample_01_1_10000000'
+    # This is brittle and needs adjustment for general cases.
+    # A better approach uses a dedicated samples.tsv file and pandas.
+    if wildcards.sample == "sample_01" and wildcards.read == "R1":
+         return os.path.join(config['reads_dir'], "sample_01_R1.fastq.gz")
+    elif wildcards.sample == "sample_01" and wildcards.read == "R2":
+         return os.path.join(config['reads_dir'], "sample_01_R2.fastq.gz")
+    else:
+         # Fallback or error for other samples/reads - needs robust implementation
+         raise ValueError(f"Cannot determine FASTQ path for sample {wildcards.sample} read {wildcards.read}")
+
+
+# --- Target Rule ---
+# Defines the final outputs desired from the competitor tools
+rule all:
+    input:
+        # Cufflinks output (using main tracking file as target)
+        expand(os.path.join(OUTPUT_BASE, "cufflinks/{sample}/isoforms.fpkm_tracking"), sample=SAMPLES),
+        # StringTie output (using abundance file as target)
+        expand(os.path.join(OUTPUT_BASE, "stringtie/{sample}_abund.tab"), sample=SAMPLES),
+        # Salmon output (using quant file as target)
+        expand(os.path.join(OUTPUT_BASE, "salmon/{sample}/quant.sf"), sample=SAMPLES),
+        # Kallisto output (using abundance file as target)
+        expand(os.path.join(OUTPUT_BASE, "kallisto/{sample}/abundance.tsv"), sample=SAMPLES),
+        # RSEM output (using isoforms results file as target)
+        expand(os.path.join(OUTPUT_BASE, "rsem/{sample}.isoforms.results"), sample=SAMPLES),
+        # Add aggregation/plotting targets here later if desired
+        # "results_benchmark/comparison_summary.tsv",
+        # "results_benchmark/plots/correlation_plot.png",
+
+
+# --- Reference Indexing Rules ---
+rule star_index:
+    input:
+        fasta=config["reference"]["genome_fasta"],
+        gtf=config["reference"]["gtf"]
+    output:
+        # STAR index generates multiple files, use directory marker
+        directory(os.path.join(OUTPUT_BASE, "reference/STAR_index"))
+    params:
+        overhang=config["star"]["index_overhang"],
+        prefix=os.path.join(OUTPUT_BASE, "reference/STAR_index/") # Ensure trailing slash
+    threads: config["threads"] # Use general threads or define specific index threads
+    # conda: "envs/star.yaml" # Example using conda environment file
+    log: os.path.join(OUTPUT_BASE, "logs/star_index.log")
+    shell:
+        "STAR --runThreadN {threads} --runMode genomeGenerate --genomeDir {output} "
+        "--genomeFastaFiles {input.fasta} --sjdbGTFfile {input.gtf} "
+        "--sjdbOverhang {params.overhang} &> {log}"
+
+rule salmon_index:
+    input:
+        transcriptome=config["reference"]["transcriptome_fasta"]
+    output:
+        directory(os.path.join(OUTPUT_BASE, "reference/salmon_index"))
+    threads: config["salmon"]["threads"]
+    # conda: "envs/salmon.yaml"
+    log: os.path.join(OUTPUT_BASE, "logs/salmon_index.log")
+    shell:
+        "salmon index -t {input.transcriptome} -i {output} -p {threads} &> {log}"
+
+rule kallisto_index:
+    input:
+        transcriptome=config["reference"]["transcriptome_fasta"]
+    output:
+        idx=os.path.join(OUTPUT_BASE, "reference/kallisto.idx")
+    # conda: "envs/kallisto.yaml"
+    log: os.path.join(OUTPUT_BASE, "logs/kallisto_index.log")
+    shell:
+        "kallisto index -i {output.idx} {input.transcriptome} &> {log}"
+
+rule rsem_prepare_reference:
+    input:
+        fasta=config["reference"]["genome_fasta"],
+        gtf=config["reference"]["gtf"]
+    output:
+        # RSEM generates multiple files based on prefix, use directory marker and a key output file
+        # The prefix MUST NOT contain the final filename part
+        directory(os.path.join(OUTPUT_BASE, "reference/rsem_prefix")),
+        flag=os.path.join(OUTPUT_BASE, "reference/rsem_prefix/rsem_ref.grp") # Example key file
+    params:
+        prefix=os.path.join(OUTPUT_BASE, "reference/rsem_prefix/rsem_ref") # Prefix passed to rsem
+    threads: config["rsem"]["prep_threads"]
+    # conda: "envs/rsem.yaml"
+    log: os.path.join(OUTPUT_BASE, "logs/rsem_prepare_reference.log")
+    shell:
+        # RSEM uses aligner specified, ensure bowtie2 or star is available
+        "rsem-prepare-reference --gtf {input.gtf} --{config['rsem']['aligner']} -p {threads} "
+        "{input.fasta} {params.prefix} &> {log}"
+
+
+# --- Alignment Rule (STAR) ---
+# Generates both genome sorted BAM (for Cufflinks/StringTie)
+# and transcriptome BAM (for RSEM, if using STAR aligner)
+rule star_align:
+    input:
+        r1=get_fastq,
+        r2=get_fastq,
+        star_index=os.path.join(OUTPUT_BASE, "reference/STAR_index"),
+    output:
+        # Need to specify both potential outputs if used by different downstream rules
+        trans_bam=os.path.join(OUTPUT_BASE, "star_align/{sample}/Aligned.toTranscriptome.out.bam"),
+        sorted_coord_bam=os.path.join(OUTPUT_BASE, "star_align/{sample}/Aligned.sortedByCoord.out.bam"),
+        log=os.path.join(OUTPUT_BASE, "star_align/{sample}/Log.final.out") # STAR's final log
+    params:
+        prefix=os.path.join(OUTPUT_BASE, "star_align/{sample}/"), # Needs trailing slash
+        overhang=config["star"]["align_overhang"]
+    threads: config["star"]["threads"]
+    # conda: "envs/star.yaml"
+    log: os.path.join(OUTPUT_BASE, "logs/star_align_{sample}.log")
+    shell:
+        "STAR --runThreadN {threads} --genomeDir {input.star_index} "
+        "--readFilesIn {input.r1} {input.r2} --sjdbOverhang {params.overhang} "
+        "--outFileNamePrefix {params.prefix} --outSAMtype BAM SortedByCoordinate "
+        "--twopassMode Basic --quantMode TranscriptomeSAM GeneCounts " # Ensure TranscriptomeSAM is included for RSEM
+        "--chimOutType Junctions SeparateSAMold --chimSegmentMin 10 " # Example params from user
+        "--readFilesCommand zcat &> {log}"
+
+
+# --- Quantification Rules ---
+rule cufflinks:
+    input:
+        bam=os.path.join(OUTPUT_BASE, "star_align/{sample}/Aligned.sortedByCoord.out.bam"),
+        gtf=config["reference"]["gtf"],
+        # genome_fasta=config["reference"]["genome_fasta"] # Add if bias correction used
+    output:
+        # Target a key output file, maybe isoforms.fpkm_tracking
+        tracking=os.path.join(OUTPUT_BASE, "cufflinks/{sample}/isoforms.fpkm_tracking"),
+        # Use directory to ensure output folder is created
+        outdir=directory(os.path.join(OUTPUT_BASE, "cufflinks/{sample}"))
+    params:
+        library_type=config["cufflinks"]["library_type"]
+    threads: config["cufflinks"]["threads"]
+    # conda: "envs/cufflinks.yaml"
+    log: os.path.join(OUTPUT_BASE, "logs/cufflinks_{sample}.log")
+    shell:
+        "cufflinks -p {threads} --library-type {params.library_type} "
+        "-G {input.gtf} -o {output.outdir} {input.bam} &> {log}"
+
+rule stringtie:
+    input:
+        bam=os.path.join(OUTPUT_BASE, "star_align/{sample}/Aligned.sortedByCoord.out.bam"),
+        gtf=config["reference"]["gtf"]
+    output:
+        gtf=os.path.join(OUTPUT_BASE, "stringtie/{sample}.gtf"),
+        abund=os.path.join(OUTPUT_BASE, "stringtie/{sample}_abund.tab")
+    threads: config["stringtie"]["threads"]
+    # conda: "envs/stringtie.yaml"
+    log: os.path.join(OUTPUT_BASE, "logs/stringtie_{sample}.log")
+    shell:
+        "stringtie {input.bam} -p {threads} -G {input.gtf} -o {output.gtf} -e -B -A {output.abund} &> {log}"
+
+rule salmon_quant:
+    input:
+        r1=get_fastq,
+        r2=get_fastq,
+        salmon_index=os.path.join(OUTPUT_BASE, "reference/salmon_index")
+    output:
+        # Target a key output file
+        quant_sf=os.path.join(OUTPUT_BASE, "salmon/{sample}/quant.sf"),
+        # Use directory marker for the output directory itself
+        outdir=directory(os.path.join(OUTPUT_BASE, "salmon/{sample}"))
+    params:
+        libtype=config["salmon"]["library_type"]
+    threads: config["salmon"]["threads"]
+    # conda: "envs/salmon.yaml"
+    log: os.path.join(OUTPUT_BASE, "logs/salmon_quant_{sample}.log")
+    shell:
+        "salmon quant -i {input.salmon_index} -l {params.libtype} -1 {input.r1} -2 {input.r2} "
+        "-p {threads} -o {output.outdir} &> {log}"
+
+rule kallisto_quant:
+    input:
+        r1=get_fastq,
+        r2=get_fastq,
+        kallisto_index=os.path.join(OUTPUT_BASE, "reference/kallisto.idx")
+    output:
+        # Target a key output file
+        abund_tsv=os.path.join(OUTPUT_BASE, "kallisto/{sample}/abundance.tsv"),
+        # Use directory marker
+        outdir=directory(os.path.join(OUTPUT_BASE, "kallisto/{sample}"))
+    threads: config["kallisto"]["threads"]
+    # conda: "envs/kallisto.yaml"
+    log: os.path.join(OUTPUT_BASE, "logs/kallisto_quant_{sample}.log")
+    shell:
+        "kallisto quant -i {input.kallisto_index} -t {threads} -o {output.outdir} {input.r1} {input.r2} &> {log}"
+
+rule rsem_calculate:
+    input:
+        # RSEM needs transcriptome-aligned BAM
+        bam=os.path.join(OUTPUT_BASE, "star_align/{sample}/Aligned.toTranscriptome.out.bam"),
+        # Needs the prefix used during prepare-reference, not just the directory
+        rsem_ref_prefix=os.path.join(OUTPUT_BASE, "reference/rsem_prefix/rsem_ref"),
+        # Need the flag file to ensure prepare-reference finished
+        prep_flag=os.path.join(OUTPUT_BASE, "reference/rsem_prefix/rsem_ref.grp")
+    output:
+        isoforms=os.path.join(OUTPUT_BASE, "rsem/{sample}.isoforms.results"),
+        genes=os.path.join(OUTPUT_BASE, "rsem/{sample}.genes.results")
+    params:
+        # RSEM calculate takes output name prefix, not directory
+        output_prefix=os.path.join(OUTPUT_BASE, "rsem/{sample}")
+    threads: config["rsem"]["calc_threads"]
+    # conda: "envs/rsem.yaml"
+    log: os.path.join(OUTPUT_BASE, "logs/rsem_calculate_{sample}.log")
+    shell:
+        # Ensure RSEM knows input is BAM if using STAR's transcriptome BAM
+        "rsem-calculate-expression --paired-end -p {threads} --bam --no-bam-output "
+        "{input.bam} {input.rsem_ref_prefix} {params.output_prefix} &> {log}"
+
+# --- Add Aggregation and Plotting Rules Below (using scripts/...) ---
+# rule aggregate_results: ...
+# rule generate_plots: ...
+

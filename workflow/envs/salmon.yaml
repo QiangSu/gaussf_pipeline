@@ -1,0 +1,7 @@
+name: salmon_env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - salmon=1.10.3 # Or specific version used

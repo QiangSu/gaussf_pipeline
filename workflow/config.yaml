@@ -1,0 +1,58 @@
+# workflow/config.yaml
+
+# --- Input Files ---
+# Adjust these paths to your actual reference files
+reference:
+  genome_fasta: "/home/data/reference_isoform/Homo_sapiens.GRCh38.dna.primary_assembly.fa"
+  transcriptome_fasta: "/home/data/reference_isoform/Homo_sapiens.GRCh38.cdna.all.fa"
+  gtf: "/home/data/reference_isoform/Homo_sapiens.GRCh38.112.gtf"
+  # Add path to ground truth if using simulated data for evaluation later
+  # ground_truth: "/path/to/ground_truth.tsv"
+
+# Directory containing FASTQ files (must follow a consistent naming pattern)
+# Example pattern assumed by get_fastq function below: {reads_dir}/{sample}_R{read_number}.fastq.gz
+reads_dir: "/home/data/reference_isoform/"
+
+# --- Sample Definition ---
+# List the base names of your samples
+samples:
+  - "sample_01" # Example from your commands
+
+# --- Output Directory ---
+# Base directory where all results will be stored
+output_base_dir: "results_benchmark" # Workflow will create this directory
+
+# --- Tool Parameters ---
+# General
+threads: 10 # Default max threads for rules
+
+# STAR (Alignment and Indexing)
+star:
+  index_overhang: 100
+  align_overhang: 100
+  threads: 5 # Specific threads for alignment
+
+# Cufflinks
+cufflinks:
+  library_type: "fr-firststrand"
+  threads: 10
+
+# StringTie
+stringtie:
+  threads: 5
+
+# Salmon
+salmon:
+  library_type: "A" # Automatic detection
+  threads: 8
+
+# Kallisto
+kallisto:
+  threads: 10
+
+# RSEM
+rsem:
+  prep_threads: 8
+  calc_threads: 10
+  aligner: "star" # Or "bowtie2" if preferred, ensure STAR transcriptome BAM is generated if "star"
+
