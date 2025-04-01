@@ -48,3 +48,43 @@ python src/gaussf_pipeline/merge_normalize.py --kmer_reference_directory /path/t
 # 4. Estimate Abundance
 # (Command will likely change to something like 'gaussf_abundance --input ...')
 python src/gaussf_pipeline/gaussf_tpm.py --threshold 10 --input /path/to/merged_output --output /path/to/results.csv
+
+
+## Reproducibility Workflow (Benchmark)
+
+This repository includes a Snakemake workflow to reproduce the analysis of competitor tools (Cufflinks, StringTie, Salmon, Kallisto, RSEM) presented in the manuscript.
+
+**Prerequisites:**
+
+*   [Snakemake](https://snakemake.readthedocs.io/en/stable/getting_started/installation.html)
+*   (Recommended) [Conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html)
+*   All competitor tools installed (STAR, Cufflinks, StringTie, Salmon, Kallisto, RSEM+Bowtie2/STAR) - installation via Conda environments defined in `workflow/envs/` is recommended.
+
+**Setup:**
+
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/QiangSu/gaussf_pipeline.git
+    cd gaussf_pipeline
+    ```
+2.  Navigate to the workflow directory:
+    ```bash
+    cd workflow
+    ```
+3.  **Crucially, edit `config.yaml`** to set the correct paths to your reference genome FASTA, transcriptome FASTA, GTF annotation file, and the directory containing your FASTQ read files. Adjust parameters if needed.
+
+**Execution:**
+
+1.  Perform a dry-run to check the workflow plan:
+    ```bash
+    snakemake -n --use-conda # Add --use-conda if using environment files
+    ```
+2.  Run the full workflow (this will take time):
+    ```bash
+    snakemake --cores <N> --use-conda # Replace <N> with the number of cores to use
+    ```
+    *   Add `--use-conda` if you created the `workflow/envs/*.yaml` files and uncommented the `conda:` lines in the `Snakefile`. Snakemake will create the necessary environments.
+    *   Remove `--use-conda` if you have installed all tools globally or manage environments manually.
+
+3.  Results will be generated in the directory specified by `output_base_dir` in the `config.yaml` (default: `results_benchmark`).
+
